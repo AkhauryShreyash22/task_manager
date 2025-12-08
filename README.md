@@ -41,78 +41,114 @@ What changed in `auth/tests.py`:
 - Added tests for cookie helpers: `set_tokens_cookies` and `delete_tokens_cookies`.
 - Added integration-style tests that exercise the `register`, `login`, `profile`, and `logout` endpoints and assert cookies and response payloads.
 - Two tests that depend on importing `CookieJWTAuthentication` are skipped when the import fails in the test environment. This keeps the test run green when `djangorestframework-simplejwt` or related configuration is not installed or available.
+# Task Manager
 
-Why two tests may be skipped:
+Task Manager is a small Django + Django REST Framework project that provides a simple tasks API and an authentication app using JWT tokens in HTTP-only cookies.
 
-- The `CookieJWTAuthentication` class lives in `auth/exception.py` and depends on DRF Simple JWT. If your environment doesn't have the package or the module can't import (for example, in some CI containers), the tests that exercise that class will be skipped with an explanatory message.
+This repository contains a minimal API for creating, listing, retrieving, updating, and deleting tasks, plus a small `auth` app to register/login users and manage cookie-based JWTs.
 
-How to make skipped tests run:
+--
 
-- Ensure `djangorestframework-simplejwt` is installed in your environment (and configured in `INSTALLED_APPS` if you use the token blacklist feature):
+## Table of contents
+
+- **Project:** brief description and purpose
+- **Prerequisites:** what you need locally
+- **Quick start:** run with Docker Compose or locally
+- **Running tests:** how to run the test suite
+- **API:** endpoints and brief examples
+- **Auth notes:** cookie / JWT and CSRF considerations
+- **Development:** tips and useful paths
+
+--
+
+## Prerequisites
+
+- Python 3.10+ (used for local runs)
+- Docker & Docker Compose (optional, recommended for consistent environment)
+- (Optional) `pipenv`/`venv` for virtual environments
+
+Project requirements are listed in `tasks/requirements.txt`.
+
+## Quick start (Docker)
+
+Start the project with Docker Compose (recommended):
 
 ```powershell
-pip install djangorestframework-simplejwt
+# from repository root
+docker-compose up --build -d
 ```
 
-- If you're using the blacklist app, also add `rest_framework_simplejwt.token_blacklist` to `INSTALLED_APPS` in your Django settings.
+Open the Django app at `http://localhost:8001/` and the API docs at `http://localhost:8001/swagger/`.
 
-- Alternatively, replace the `skipTest` behavior in `auth/tests.py` with mocks that simulate the `CookieJWTAuthentication` behavior; I can provide a patch for that if you prefer.
+## Quick start (local, Windows PowerShell)
+
+```powershell
+cd d:\personal_work\task_manager\tasks
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver 127.0.0.1:8001
+```
+
+## Running tests
+
+Run all tests for the Django project:
+
+```powershell
+cd d:\personal_work\task_manager\tasks
+python manage.py test
+```
+
+Run tests for a single app (e.g., `task_manager`):
+
+```powershell
+python manage.py test task_manager
+```
+
+If running inside Docker, adapt the service name and use `docker compose run --rm`.
+
+## API Overview
+
+Base URL (when running locally): `http://localhost:8001/`
+
+Task endpoints (mounted at `/api/tasks/`):
+
+- `GET /api/tasks/` — list tasks (paginated)
+- `POST /api/tasks/` — create a task (authenticated)
+- `GET /api/tasks/{id}/` — retrieve a task
+- `PUT /api/tasks/{id}/` — update a task (admin only for some operations)
+- `DELETE /api/tasks/{id}/` — delete a task (admin only)
+
+Example: create a task (when authenticated via cookie tokens):
+
+```bash
+curl -X POST "http://localhost:8001/api/tasks/" \
+  -H "Content-Type: application/json" \
+  --cookie "access_token=<access>; refresh_token=<refresh>" \
+  -d '{"title":"New task","description":"demo","completed":false}'
+```
+
+Note: the test suite issues JWT refresh tokens and sets them as cookies on the test client (see `task_manager/tests.py`).
+
+## Authentication notes
+
+- The `auth` app issues JWT `access_token` and `refresh_token` as HTTP-only cookies.
+- Authentication is implemented using a cookie-aware JWT authentication class that reads `access_token` from `request.COOKIES`.
+- You may need to send CSRF tokens when using the browsable API or a front-end that uses cookies; the API tests use token cookies and `rest_framework_simplejwt` behavior, so adjust as necessary.
+
+If you see 401/403 errors when testing with `curl`, ensure you include the appropriate cookies and CSRF headers (or use token auth).
+
+## Useful files and paths
+
+- `tasks/` — Django project settings and entrypoint
+- `tasks/task_manager/` — tasks app (models, views, serializers, tests)
+- `tasks/auth/` — authentication app (custom cookie-JWT helpers, views, serializers)
+- `tasks/requirements.txt` — Python dependencies
+- `docker-compose.yml`, `Dockerfile`, `entrypoint.sh` — docker setup
 
 
-
-
-## Auth API (Endpoints, Serializers, and Implementation)
-
-This project includes a small authentication app at `tasks/auth` that provides JWT-based auth using HTTP-only cookies. Below is a friendly explanation of the implemented endpoints, the serializers they use, helper utilities, and important implementation notes.
-
-- Base URL: the app mounts its routes at the project root. See `tasks/urls.py` which includes `auth.urls`.
-
-- Endpoints (in `tasks/auth/urls.py`):
-	- `POST /register/` — Register a new user.
-	- `POST /login/` — Login using email + password.
-	- `POST /logout/` — Logout (revokes/blacklists refresh token and deletes cookies).
-	- `POST /refresh/` — (Implemented as `RefreshTokenAPI`) Refreshes access token using refresh cookie.
-	- `GET /profile/` — Returns details for the authenticated user.
-
-- Key serializers (`tasks/auth/serializers.py`):
-	- `RegisterSerializer` — fields: `first_name`, `last_name`, `email`, `password`, `confirm_password`.
-		- Validates duplicate email and password confirmation.
-		- `create()` sets `username` to the email and creates a Django `User`.
-	- `LoginSerializer` — fields: `email`, `password`.
-	- `LogoutSerializer` — optional `refresh` field (not required since refresh is read from cookie).
-	- Response serializers: `UserResponseSerializer`, `LoginResponseSerializer`, `RegisterResponseSerializer`, `LogoutResponseSerializer`, `RefreshTokenResponseSerializer`, `ProfileResponseSerializer` — used by documentation and `drf-spectacular` examples.
-
-- Views and behavior (`tasks/auth/views.py`):
-	- `RegisterView` (no authentication required):
-		- Validates the `RegisterSerializer`, creates the user, issues tokens via `RefreshToken.for_user(user)` and sets two HTTP-only cookies: `access_token` and `refresh_token` using `set_tokens_cookies`.
-		- Returns a 201 with a `message` and `user` info.
-
-	- `LoginAPI` (no authentication required):
-		- Authenticates with `django.contrib.auth.authenticate(username=email, password=...)`.
-		- On success, issues tokens and sets the same cookies as register; returns user info and message.
-
-	- `LogoutAPI` (requires authentication):
-		- Reads `refresh_token` from cookies. If present, tries to blacklist it (`RefreshToken(refresh_token).blacklist()`), ignoring `TokenError` if blacklisting fails.
-		- Deletes `access_token` and `refresh_token` cookies via `delete_tokens_cookies` and returns a success message.
-
-	- `RefreshTokenAPI` (AllowAny):
-		- Reads `refresh_token` cookie and, if valid, builds a new access token and sets fresh cookies.
-
-	- `ProfileAPI` (requires authentication):
-		- Returns a `user` object with `id`, `email`, `first_name`, `last_name` from `request.user`.
-
-- Cookie helpers (`tasks/auth/utils.py`):
-	- `set_tokens_cookies(response, access_token, refresh_token)` — sets two HTTP-only cookies (`access_token`, `refresh_token`) with `samesite='Lax'` and `httponly=True`.
-	- `delete_tokens_cookies(response)` — deletes both cookies.
-
-- Custom authentication (`tasks/auth/exception.py`):
-	- `CookieJWTAuthentication` extends `rest_framework_simplejwt.authentication.JWTAuthentication` and looks for an `access_token` in `request.COOKIES`.
-	- If found, it injects `HTTP_AUTHORIZATION: Bearer <token>` into `request.META` and delegates to the base class.
-	- For specific unprotected paths (swagger/schema/redoc/login), it returns `None` to bypass authentication.
-	- If no cookie is present or token validation fails, it raises `AuthenticationFailed` (tests may skip these checks if `simplejwt` is not installed).
-
-- Exceptions and error shaping (`tasks/auth/exception.py` & `tasks/auth/exception.py` custom handler):
-	- A custom exception handler `custom_exception_handler` is present and transforms DRF validation errors into a consistent `{ "errors": { ... } }` shape for 400 responses.
 
 
 
